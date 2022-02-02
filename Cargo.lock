@@ -491,7 +491,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "newreleases-action-dispatch"
+name = "newreleases-dispatch-action"
 version = "0.1.0"
 dependencies = [
  "anyhow",
