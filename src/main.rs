@@ -9,11 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr};
 
 static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
+static VERSION_ENV: &str = "VERSION";
 static KNOWN_VALUE_ENV: &str = "NEWRELEASES_KNOWN_VALUE";
 
 static KNOWN_VALUE_HEADER: &str = "X-Known-Value";
 static NR_OWNER_HEADER: &str = "X-NewReleases-Owner";
 static NR_REPO_HEADER: &str = "X-NewReleases-Repo";
+
+static USER_AGENT_BASE: &str = "kryptn/newreleases-dispatch-action";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ReleaseNote {
@@ -84,12 +87,13 @@ fn build_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
     let token = env::var(GITHUB_TOKEN_ENV)?;
     let uri = format!("https://api.github.com/repos/{}/{}/dispatches", owner, repo);
 
+    let version = env::var(VERSION_ENV).unwrap_or("unknown".to_string());
+
     let req = reqwest::Client::new()
         .post(uri)
         .header("Accept", "application/vnd.github.v3+json")
         .header("Authorization", format!("token {}", token))
-        .header("User-Agent", "newreleases-disp-v0.0.1");
-
+        .header("User-Agent", format!("{}@{}", USER_AGENT_BASE, version));
     Ok(req)
 }
 
@@ -98,8 +102,8 @@ async fn dispatch_action(Json(payload): Json<Release>, headers: HeaderMap) -> im
         Ok(v) => v,
         Err(_) => {
             tracing::error!("expected environment variable \"{}\"", KNOWN_VALUE_ENV);
-            return StatusCode::INTERNAL_SERVER_ERROR
-        },
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
     };
 
     if let Some(known_value) = headers.get(KNOWN_VALUE_HEADER) {
