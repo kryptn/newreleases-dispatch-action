@@ -1,0 +1,2 @@
+export GITHUB_TOKEN=repo_personal_access_token
+export NEWRELEASES_KNOWN_VALUE=some-key
