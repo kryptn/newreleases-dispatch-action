@@ -19,7 +19,7 @@ jobs:
         id: docker_meta
         uses: docker/metadata-action@v3
         with:
-          images: ghcr.io/kryptn/presence/slack-cmd-set
+          images: ghcr.io/kryptn/newreleases-dispatch-action
           flavor: |
             latest=true
           tags: |
