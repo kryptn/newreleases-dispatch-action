@@ -96,14 +96,19 @@ fn build_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
 async fn dispatch_action(Json(payload): Json<Release>, headers: HeaderMap) -> impl IntoResponse {
     let expected_known_value = match env::var(KNOWN_VALUE_ENV) {
         Ok(v) => v,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+        Err(_) => {
+            tracing::error!("expected environment variable \"{}\"", KNOWN_VALUE_ENV);
+            return StatusCode::INTERNAL_SERVER_ERROR
+        },
     };
 
     if let Some(known_value) = headers.get(KNOWN_VALUE_HEADER) {
         if known_value != &expected_known_value {
+            tracing::error!("known value did not match expected \"{}\"", KNOWN_VALUE_ENV);
             return StatusCode::UNAUTHORIZED;
         }
     } else {
+        tracing::error!("expected header \"{}\"", KNOWN_VALUE_HEADER);
         return StatusCode::UNAUTHORIZED;
     }
 
