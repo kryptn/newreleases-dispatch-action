@@ -1,5 +1,7 @@
 use anyhow::Result;
 use axum::{
+    body::{Body, Bytes},
+    extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -11,16 +13,22 @@ use std::{env, net::SocketAddr};
 static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 static VERSION_ENV: &str = "VERSION";
 static KNOWN_VALUE_ENV: &str = "NEWRELEASES_KNOWN_VALUE";
+static NR_WEBHOOK_SECRET_ENV: &str = "WEBHOOK_SECRET";
 
 static KNOWN_VALUE_HEADER: &str = "X-Known-Value";
 static NR_OWNER_HEADER: &str = "X-NewReleases-Owner";
 static NR_REPO_HEADER: &str = "X-NewReleases-Repo";
 
+static NR_SIGNATURE: &str = "X-Newreleases-Signature";
+static NR_TIMESTAMP: &str = "X-Newreleases-Timestamp";
+
 static USER_AGENT_BASE: &str = "kryptn/newreleases-dispatch-action";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ReleaseNote {
+    #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
 }
 
@@ -30,9 +38,13 @@ struct Release {
     project: String,
     version: String,
     time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cve: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     is_prerelease: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     is_updated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<ReleaseNote>,
 }
 
@@ -67,7 +79,9 @@ async fn main() {
     let app = Router::new()
         .route("/", get(health))
         .route("/healthz", get(health))
-        .route("/newreleases", post(dispatch_action));
+        .route("/newreleases", post(dispatch_action))
+        //.route("/:owner/:repo/", post(handle_release))
+        .route("/:owner/:repo/:event_type", post(handle_release));
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
@@ -97,37 +111,111 @@ fn build_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
     Ok(req)
 }
 
-async fn dispatch_action(Json(payload): Json<Release>, headers: HeaderMap) -> impl IntoResponse {
+fn get_header(headers: &HeaderMap, key: &str) -> Result<String, StatusCode> {
+    if let Some(value) = headers.get(key) {
+        let value = value.to_str().unwrap();
+        Ok(value.to_string())
+    } else {
+        Err(StatusCode::BAD_REQUEST)
+    }
+}
+
+fn check_known_value(headers: &HeaderMap) -> Result<(), StatusCode> {
     let expected_known_value = match env::var(KNOWN_VALUE_ENV) {
         Ok(v) => v,
         Err(_) => {
             tracing::error!("expected environment variable \"{}\"", KNOWN_VALUE_ENV);
-            return StatusCode::INTERNAL_SERVER_ERROR;
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
-    if let Some(known_value) = headers.get(KNOWN_VALUE_HEADER) {
-        if known_value != &expected_known_value {
-            tracing::error!("known value did not match expected \"{}\"", KNOWN_VALUE_ENV);
-            return StatusCode::UNAUTHORIZED;
+    let known_value = match get_header(&headers, KNOWN_VALUE_HEADER) {
+        Ok(v) => v,
+        Err(code) => {
+            tracing::error!("expected header \"{}\"", KNOWN_VALUE_HEADER);
+            return Err(code);
         }
-    } else {
-        tracing::error!("expected header \"{}\"", KNOWN_VALUE_HEADER);
-        return StatusCode::UNAUTHORIZED;
+    };
+
+    if known_value != expected_known_value {
+        tracing::error!("known value did not match expected \"{}\"", KNOWN_VALUE_ENV);
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let owner = headers
-        .get(NR_OWNER_HEADER)
-        .expect("guaranteed value")
-        .to_str()
-        .unwrap();
-    let repo = headers
-        .get(NR_REPO_HEADER)
-        .expect("guaranteed value")
-        .to_str()
-        .unwrap();
+    Ok(())
+}
 
-    let req = match build_request(owner, repo) {
+fn check_signature(headers: &HeaderMap, body: &Bytes) -> Result<(), StatusCode> {
+    let secret = match env::var(NR_WEBHOOK_SECRET_ENV) {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::error!(
+                "expected environment variable \"{}\"",
+                NR_WEBHOOK_SECRET_ENV
+            );
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let timestamp = get_header(headers, NR_TIMESTAMP).expect("NewReleases.io sends this");
+    let signature = get_header(headers, NR_SIGNATURE).expect("NewReleases.io sends this");
+
+    Ok(())
+}
+
+async fn handle_release(
+    Json(payload): Json<Release>,
+    Path((owner, repo, event_type)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    //body: Bytes,
+) -> impl IntoResponse {
+    if let Err(code) = check_known_value(&headers) {
+        return code;
+    }
+
+    // if let Err(code) = check_signature(&headers, &body) {
+    //     return code;
+    // }
+
+    let req = match build_request(&owner, &repo) {
+        Ok(req) => req,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
+    };
+
+    let dispatch = Dispatch::new(&event_type, payload);
+    let resp = req.json(&dispatch).send().await.unwrap();
+
+    match resp.status() {
+        StatusCode::NO_CONTENT => tracing::info!("dispatch for {}/{} sent", owner, repo),
+        StatusCode::UNPROCESSABLE_ENTITY => tracing::error!("dispatch for {}/{} sent", owner, repo),
+        v => tracing::warn!(
+            "dispatch for {}/{} received unexpected response: {}",
+            owner,
+            repo,
+            v
+        ),
+    }
+
+    StatusCode::OK
+}
+
+async fn dispatch_action(
+    Json(payload): Json<Release>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(code) = check_known_value(&headers) {
+        return code;
+    }
+
+    if let Err(code) = check_signature(&headers, &body) {
+        return code;
+    }
+
+    let owner = get_header(&headers, NR_OWNER_HEADER).unwrap();
+    let repo = get_header(&headers, NR_REPO_HEADER).unwrap();
+
+    let req = match build_request(&owner, &repo) {
         Ok(req) => req,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -146,6 +234,5 @@ async fn dispatch_action(Json(payload): Json<Release>, headers: HeaderMap) -> im
         ),
     }
 
-    
     StatusCode::OK
 }
