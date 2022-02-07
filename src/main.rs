@@ -79,8 +79,6 @@ async fn main() {
     let app = Router::new()
         .route("/", get(health))
         .route("/healthz", get(health))
-        .route("/newreleases", post(dispatch_action))
-        //.route("/:owner/:repo/", post(handle_release))
         .route("/:owner/:repo/:event_type", post(handle_release));
 
     // run our app with hyper
@@ -183,44 +181,6 @@ async fn handle_release(
     };
 
     let dispatch = Dispatch::new(&event_type, payload);
-    let resp = req.json(&dispatch).send().await.unwrap();
-
-    match resp.status() {
-        StatusCode::NO_CONTENT => tracing::info!("dispatch for {}/{} sent", owner, repo),
-        StatusCode::UNPROCESSABLE_ENTITY => tracing::error!("dispatch for {}/{} sent", owner, repo),
-        v => tracing::warn!(
-            "dispatch for {}/{} received unexpected response: {}",
-            owner,
-            repo,
-            v
-        ),
-    }
-
-    StatusCode::OK
-}
-
-async fn dispatch_action(
-    Json(payload): Json<Release>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    if let Err(code) = check_known_value(&headers) {
-        return code;
-    }
-
-    if let Err(code) = check_signature(&headers, &body) {
-        return code;
-    }
-
-    let owner = get_header(&headers, NR_OWNER_HEADER).unwrap();
-    let repo = get_header(&headers, NR_REPO_HEADER).unwrap();
-
-    let req = match build_request(&owner, &repo) {
-        Ok(req) => req,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
-    };
-
-    let dispatch = Dispatch::new("newreleases", payload);
     let resp = req.json(&dispatch).send().await.unwrap();
 
     match resp.status() {
