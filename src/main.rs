@@ -1,13 +1,17 @@
 use anyhow::Result;
+
 use axum::{
-    body::{Body, Bytes},
+    body::Bytes,
     extract::Path,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
+    Router,
 };
+
+use ring::hmac;
 use serde::{Deserialize, Serialize};
+
 use std::{env, net::SocketAddr};
 
 static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
@@ -16,8 +20,6 @@ static KNOWN_VALUE_ENV: &str = "NEWRELEASES_KNOWN_VALUE";
 static NR_WEBHOOK_SECRET_ENV: &str = "WEBHOOK_SECRET";
 
 static KNOWN_VALUE_HEADER: &str = "X-Known-Value";
-static NR_OWNER_HEADER: &str = "X-NewReleases-Owner";
-static NR_REPO_HEADER: &str = "X-NewReleases-Repo";
 
 static NR_SIGNATURE: &str = "X-Newreleases-Signature";
 static NR_TIMESTAMP: &str = "X-Newreleases-Timestamp";
@@ -157,23 +159,39 @@ fn check_signature(headers: &HeaderMap, body: &Bytes) -> Result<(), StatusCode> 
 
     let timestamp = get_header(headers, NR_TIMESTAMP).expect("NewReleases.io sends this");
     let signature = get_header(headers, NR_SIGNATURE).expect("NewReleases.io sends this");
+    let signature = hex::decode(signature).unwrap();
 
-    Ok(())
+    let v_key = hmac::Key::new(hmac::HMAC_SHA256, &secret.as_bytes());
+    let body = std::str::from_utf8(body).unwrap();
+    let message = format!("{}.{}", timestamp, body);
+
+    match hmac::verify(&v_key, message.as_bytes(), &signature) {
+        Ok(_) => {
+            tracing::debug!("signature verified");
+            Ok(())
+        }
+        Err(_) => {
+            tracing::error!("uh oh");
+            Err(StatusCode::BAD_REQUEST)
+        }
+    }
 }
 
 async fn handle_release(
-    Json(payload): Json<Release>,
+    //Json(payload): Json<Release>,
     Path((owner, repo, event_type)): Path<(String, String, String)>,
     headers: HeaderMap,
-    //body: Bytes,
+    body: Bytes,
 ) -> impl IntoResponse {
     if let Err(code) = check_known_value(&headers) {
         return code;
     }
 
-    // if let Err(code) = check_signature(&headers, &body) {
-    //     return code;
-    // }
+    if let Err(code) = check_signature(&headers, &body) {
+        return code;
+    }
+
+    let payload: Release = serde_json::from_slice(&body).unwrap();
 
     let req = match build_request(&owner, &repo) {
         Ok(req) => req,
