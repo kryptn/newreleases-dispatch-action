@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "newreleases-dispatch-action"
-version = "0.1.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
