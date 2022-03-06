@@ -11,8 +11,13 @@ use axum::{
 
 use ring::hmac;
 use serde::{Deserialize, Serialize};
+use tower::ServiceBuilder;
+use tower_http::trace::TraceLayer;
+use tracing_futures::Instrument;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
+use tracing_tree::HierarchicalLayer;
 
-use std::{env, net::SocketAddr};
+use std::{env, error::Error, net::SocketAddr};
 
 static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 static KNOWN_VALUE_ENV: &str = "NEWRELEASES_KNOWN_VALUE";
@@ -74,16 +79,18 @@ where
     }
 }
 
-#[tokio::main]
-async fn main() {
-    // initialize tracing
-    tracing_subscriber::fmt::init();
-
+#[tracing::instrument]
+async fn run_server() -> Result<(), Box<dyn Error>> {
     // build our application with a route
     let app = Router::new()
         .route("/", get(health))
         .route("/healthz", get(health))
-        .route("/:owner/:repo/:event_type", post(handle_release));
+        .route("/:owner/:repo/:event_type", post(handle_release))
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .into_inner(),
+        );
 
     // run our app with hyper
     // `axum::Server` is a re-export of `hyper::Server`
@@ -93,6 +100,55 @@ async fn main() {
         .serve(app.into_make_service())
         .await
         .unwrap();
+
+    Ok(())
+}
+
+fn setup_tracing() -> Result<(), Box<dyn Error>> {
+    let tracer = opentelemetry_jaeger::new_pipeline()
+        .with_service_name("newreleases_dispatch")
+        .install_batch(opentelemetry::runtime::Tokio)?;
+
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    Registry::default()
+        .with(EnvFilter::from_default_env())
+        .with(
+            HierarchicalLayer::new(2)
+                .with_targets(true)
+                .with_bracketed_fields(true),
+        )
+        .with(telemetry)
+        .init();
+
+    Ok(())
+}
+
+fn teardown_tracing() {
+    opentelemetry::global::shutdown_tracer_provider();
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    setup_tracing()?;
+
+    // initialize tracing
+    // tracing_subscriber::fmt::init();
+    tracing::info!(target: "app start", PKG_NAME, VERSION);
+
+    // Registry::default()
+    //     .with(EnvFilter::from_default_env())
+    //     .with(
+    //         HierarchicalLayer::new(2)
+    //             .with_targets(true)
+    //             .with_bracketed_fields(true),
+    //     )
+    //     .init();
+
+    run_server().await?;
+
+    teardown_tracing();
+    Ok(())
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -114,7 +170,8 @@ async fn health() -> (StatusCode, Json<ServiceMetadata>) {
     (StatusCode::OK, Json(ServiceMetadata::new()))
 }
 
-fn build_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
+#[tracing::instrument]
+fn build_dispatch_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
     let token = env::var(GITHUB_TOKEN_ENV)?;
     let uri = format!("https://api.github.com/repos/{}/{}/dispatches", owner, repo);
 
@@ -125,9 +182,11 @@ fn build_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
         .header("Accept", "application/vnd.github.v3+json")
         .header("Authorization", format!("token {}", token))
         .header("User-Agent", format!("{}@{}", USER_AGENT_BASE, version));
+
     Ok(req)
 }
 
+#[tracing::instrument]
 fn get_header(headers: &HeaderMap, key: &str) -> Result<String, StatusCode> {
     if let Some(value) = headers.get(key) {
         let value = value.to_str().unwrap();
@@ -137,6 +196,7 @@ fn get_header(headers: &HeaderMap, key: &str) -> Result<String, StatusCode> {
     }
 }
 
+#[tracing::instrument]
 fn check_known_value(headers: &HeaderMap) -> Result<(), StatusCode> {
     let expected_known_value = match env::var(KNOWN_VALUE_ENV) {
         Ok(v) => v,
@@ -162,6 +222,7 @@ fn check_known_value(headers: &HeaderMap) -> Result<(), StatusCode> {
     Ok(())
 }
 
+#[tracing::instrument]
 fn check_signature(headers: &HeaderMap, body: &Bytes) -> Result<(), StatusCode> {
     let secret = match env::var(NR_WEBHOOK_SECRET_ENV) {
         Ok(v) => v,
@@ -194,29 +255,20 @@ fn check_signature(headers: &HeaderMap, body: &Bytes) -> Result<(), StatusCode> 
     }
 }
 
-async fn handle_release(
-    //Json(payload): Json<Release>,
-    Path((owner, repo, event_type)): Path<(String, String, String)>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> impl IntoResponse {
-    if let Err(code) = check_known_value(&headers) {
-        return code;
-    }
-
-    if let Err(code) = check_signature(&headers, &body) {
-        return code;
-    }
-
-    let payload: Release = serde_json::from_slice(&body).unwrap();
-
-    let req = match build_request(&owner, &repo) {
+#[tracing::instrument]
+async fn dispatch_update(
+    owner: String,
+    repo: String,
+    event_type: String,
+    release: Release,
+) -> StatusCode {
+    let req = match build_dispatch_request(&owner, &repo) {
         Ok(req) => req,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
 
-    let dispatch = Dispatch::new(&event_type, payload);
-    let resp = req.json(&dispatch).send().await.unwrap();
+    let dispatch = Dispatch::new(&event_type, release);
+    let resp = req.json(&dispatch).send().in_current_span().await.unwrap();
 
     match resp.status() {
         StatusCode::NO_CONTENT => tracing::info!("dispatch for {}/{} sent", owner, repo),
@@ -230,4 +282,30 @@ async fn handle_release(
     }
 
     StatusCode::OK
+}
+
+#[tracing::instrument]
+async fn handle_release(
+    //Json(payload): Json<Release>,
+    Path((owner, repo, event_type)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    tracing::info!(target: "handling release", owner= ?owner, repo = ?repo, event_type = ?event_type);
+
+    if let Err(code) = check_known_value(&headers) {
+        tracing::warn!(target: "known value didn't match", owner= ?owner, repo = ?repo, event_type = ?event_type);
+        return code;
+    }
+
+    if let Err(code) = check_signature(&headers, &body) {
+        tracing::warn!(target: "newreleases signature failure", owner= ?owner, repo = ?repo, event_type = ?event_type);
+        return code;
+    }
+
+    let payload: Release = serde_json::from_slice(&body).unwrap();
+
+    dispatch_update(owner, repo, event_type, payload)
+        .in_current_span()
+        .await
 }
