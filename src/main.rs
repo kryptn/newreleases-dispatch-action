@@ -6,7 +6,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 
 use ring::hmac;
@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::{env, net::SocketAddr};
 
 static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
-static VERSION_ENV: &str = "VERSION";
 static KNOWN_VALUE_ENV: &str = "NEWRELEASES_KNOWN_VALUE";
 static NR_WEBHOOK_SECRET_ENV: &str = "WEBHOOK_SECRET";
 
@@ -25,6 +24,9 @@ static NR_SIGNATURE: &str = "X-Newreleases-Signature";
 static NR_TIMESTAMP: &str = "X-Newreleases-Timestamp";
 
 static USER_AGENT_BASE: &str = "kryptn/newreleases-dispatch-action";
+
+static PKG_NAME: Option<&str> = option_env!("CARGO_PKG_NAME");
+static VERSION: Option<&str> = option_env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ReleaseNote {
@@ -93,15 +95,30 @@ async fn main() {
         .unwrap();
 }
 
-async fn health() -> StatusCode {
-    StatusCode::OK
+#[derive(Deserialize, Serialize, Debug)]
+struct ServiceMetadata {
+    version: Option<&'static str>,
+    pkg_name: Option<&'static str>,
+}
+
+impl<'a> ServiceMetadata {
+    fn new() -> Self {
+        Self {
+            version: VERSION,
+            pkg_name: PKG_NAME,
+        }
+    }
+}
+
+async fn health() -> (StatusCode, Json<ServiceMetadata>) {
+    (StatusCode::OK, Json(ServiceMetadata::new()))
 }
 
 fn build_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
     let token = env::var(GITHUB_TOKEN_ENV)?;
     let uri = format!("https://api.github.com/repos/{}/{}/dispatches", owner, repo);
 
-    let version = env::var(VERSION_ENV).unwrap_or("unknown".to_string());
+    let version = VERSION.unwrap_or("unknown");
 
     let req = reqwest::Client::new()
         .post(uri)
