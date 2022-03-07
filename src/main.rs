@@ -9,14 +9,11 @@ use axum::{
     Json, Router,
 };
 
-
 use serde::{Deserialize, Serialize};
 
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 use tracing_futures::Instrument;
-
-
 
 use std::{error::Error, net::SocketAddr};
 

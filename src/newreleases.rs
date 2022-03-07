@@ -8,13 +8,7 @@ use axum::{
 use ring::hmac;
 use serde::{Deserialize, Serialize};
 
-
-
-
-
-
-
-use std::{env};
+use std::env;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ReleaseNote {
