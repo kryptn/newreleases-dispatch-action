@@ -1,4 +1,4 @@
-FROM rust:1.58 as builder
+FROM rust:1.59 as builder
 
 RUN USER=root cargo new --bin newreleases-dispatch-action
 WORKDIR /newreleases-dispatch-action
