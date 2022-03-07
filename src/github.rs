@@ -8,8 +8,11 @@ use tracing_futures::Instrument;
 
 use std::env;
 
+static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
+static USER_AGENT_BASE: &str = "kryptn/newreleases-dispatch-action";
+
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Dispatch<T>
+pub(crate) struct Dispatch<T>
 where
     T: Serialize,
 {
@@ -32,7 +35,7 @@ where
 
 #[tracing::instrument]
 fn build_dispatch_request(owner: &str, repo: &str) -> Result<reqwest::RequestBuilder> {
-    let token = env::var(crate::GITHUB_TOKEN_ENV)?;
+    let token = env::var(GITHUB_TOKEN_ENV)?;
     let uri = format!("https://api.github.com/repos/{}/{}/dispatches", owner, repo);
 
     let version = crate::VERSION.unwrap_or("unknown");
@@ -41,16 +44,13 @@ fn build_dispatch_request(owner: &str, repo: &str) -> Result<reqwest::RequestBui
         .post(uri)
         .header("Accept", "application/vnd.github.v3+json")
         .header("Authorization", format!("token {}", token))
-        .header(
-            "User-Agent",
-            format!("{}@v{}", crate::USER_AGENT_BASE, version),
-        );
+        .header("User-Agent", format!("{}@v{}", USER_AGENT_BASE, version));
 
     Ok(req)
 }
 
 #[tracing::instrument]
-pub async fn dispatch_update<T>(
+pub(crate) async fn dispatch_update<T>(
     owner: String,
     repo: String,
     event_type: String,
