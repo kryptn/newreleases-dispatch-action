@@ -5,7 +5,7 @@ use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
 use tracing_tree::HierarchicalLayer;
 
-use std::{env};
+use std::env;
 
 static ENABLE_TRACE_TREE: &str = "ENABLE_TRACE_TREE";
 
@@ -18,7 +18,7 @@ fn tree_layer() -> Option<HierarchicalLayer> {
 
     // force this true for now.
     // todo: figure out a good way to pick between this locally and json in prod
-    if enable_tree_layer || true{
+    if enable_tree_layer || true {
         Some(
             HierarchicalLayer::new(2)
                 .with_targets(true)
@@ -35,7 +35,6 @@ pub(crate) fn setup_tracing() -> Result<()> {
         .install_batch(opentelemetry::runtime::Tokio)?;
 
     let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-
 
     Registry::default()
         .with(EnvFilter::from_default_env())
