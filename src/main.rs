@@ -21,7 +21,7 @@ use std::{env, error::Error, net::SocketAddr};
 
 static GITHUB_TOKEN_ENV: &str = "GITHUB_TOKEN";
 static KNOWN_VALUE_ENV: &str = "NEWRELEASES_KNOWN_VALUE";
-static NR_WEBHOOK_SECRET_ENV: &str = "WEBHOOK_SECRET";
+static NR_WEBHOOK_SECRET_ENV: &str = "NEWRELEASES_WEBHOOK_SECRET_KEY";
 
 static KNOWN_VALUE_HEADER: &str = "X-Known-Value";
 
