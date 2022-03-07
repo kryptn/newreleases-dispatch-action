@@ -9,16 +9,16 @@ use axum::{
     Json, Router,
 };
 
-use ring::hmac;
+
 use serde::{Deserialize, Serialize};
-use tokio::signal;
+
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 use tracing_futures::Instrument;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Registry};
-use tracing_tree::HierarchicalLayer;
 
-use std::{env, error::Error, net::SocketAddr};
+
+
+use std::{error::Error, net::SocketAddr};
 
 mod app;
 mod github;
